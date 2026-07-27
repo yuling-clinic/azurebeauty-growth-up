@@ -241,6 +241,17 @@ function ageFromDates(birth, measure) {
   return ms / (365.2425 * 24 * 3600 * 1000);
 }
 
+// Given a birth date and an age expressed as (years, months), return the calendar date
+// the child would have been that age — used for batch-paste rows like "1y6m 77.7 9.6".
+function addAgeToDate(birthISO, years, months) {
+  const b = new Date(birthISO);
+  if (isNaN(b)) return null;
+  const d = new Date(b);
+  d.setFullYear(d.getFullYear() + (years || 0));
+  d.setMonth(d.getMonth() + (months || 0));
+  return d.toISOString().slice(0, 10);
+}
+
 function ageFromGradeSemester(birthISO, gradeLabel, semester) {
   if (!birthISO) return null;
   const grade = parseGrade(gradeLabel);
@@ -587,12 +598,26 @@ function parsePastedData(text, birthISO) {
 
     // Try to identify each token's role
     let dateToken = null, gradeToken = null, semesterToken = null;
+    let ageYears = null, ageMonths = null;
     let height = null, weight = null;
     const numbers = [];
 
     for (const tok of tokens) {
       // Skip header words like "Date", "Ht", "Wt", "日期", "身高", "體重", "BMI"
       if (/^(date|ht|wt|height|weight|bmi|日期|身高|體重)$/i.test(tok)) continue;
+      // Age expressed as years+months, e.g. "1y6m", "2y", "18m" (months only)
+      const ageYM = tok.match(/^(\d+)\s*y(?:\s*(\d{1,2})\s*m)?$/i);
+      if (ageYM) {
+        ageYears = parseInt(ageYM[1]);
+        ageMonths = ageYM[2] ? parseInt(ageYM[2]) : 0;
+        continue;
+      }
+      const ageMOnly = tok.match(/^(\d{1,2})\s*m$/i);
+      if (ageMOnly) {
+        ageYears = 0;
+        ageMonths = parseInt(ageMOnly[1]);
+        continue;
+      }
       // ISO date or ROC date with separators
       if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(tok) || /^\d{2,3}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(tok)) {
         dateToken = tok;
@@ -689,6 +714,15 @@ function parsePastedData(text, birthISO) {
         mode: "grade",
         grade: gradeToken, semester: semesterToken,
         measureDate: r?.inferredDate,
+        height, weight,
+        rawLine: line,
+      });
+    } else if (ageYears != null) {
+      const measureDate = addAgeToDate(birthISO, ageYears, ageMonths);
+      rows.push({
+        mode: "age",
+        ageYears, ageMonths,
+        measureDate,
         height, weight,
         rawLine: line,
       });
@@ -1317,7 +1351,9 @@ function parsePatientText(text) {
     const stopWords = new Set([
       "姓名", "病歷", "性別", "生日", "出生", "日期", "民國", "父親", "母親", "身高", "體重",
       "家族史", "病史", "健保", "卡號", "備註", "診斷", "中親", "標的", "身分證", "電話",
-      "地址", "備考", "醫師", "病人", "西元"
+      "地址", "備考", "醫師", "病人", "西元",
+      "小一", "小二", "小三", "小四", "小五", "小六", "國一", "國二", "國三",
+      "高一", "高二", "高三", "幼小", "幼中", "幼大", "小班", "中班", "大班"
     ]);
     const candidates = fullText.match(/[\u4e00-\u9fa5]{2,4}/g) || [];
     for (const c of candidates) {
@@ -1343,6 +1379,39 @@ function parsePatientText(text) {
   return result;
 }
 
+// Parses both the patient basic info AND any batch height/weight rows (grade/date/age
+// + height + weight lines) from a single pasted block of text, so "新增病人" can recognize
+// a full intake sheet (basic info + per-semester growth records) in one paste.
+function parsePatientTextWithGrowth(text) {
+  const info = parsePatientText(text);
+  if (!info) return { info: null, records: [] };
+  let records = [];
+  if (info.birth) {
+    const growth = parsePastedData(text, info.birth);
+    records = growth.rows.map(r => {
+      const age = (r.mode === "date" || r.mode === "age")
+        ? ageFromDates(info.birth, r.measureDate)
+        : ageFromGradeSemester(info.birth, r.grade, r.semester)?.age;
+      return {
+        id: uid(),
+        mode: r.mode,
+        measureDate: r.measureDate,
+        grade: r.grade || null,
+        semester: r.semester || null,
+        age,
+        height: r.height ?? null,
+        weight: r.weight ?? null,
+        bmi: (r.height && r.weight) ? r.weight / Math.pow(r.height / 100, 2) : null,
+        boneAge: null,
+        note: "",
+        recordType: "initial",
+        createdAt: new Date().toISOString(),
+      };
+    }).filter(r => r.age != null && r.age >= 0 && r.age <= 18.5 && (r.height != null || r.weight != null));
+  }
+  return { info, records };
+}
+
 function PatientForm({ initial, onSave, onCancel }) {
   const [tab, setTab] = useState("manual"); // manual | paste
   const [pasteText, setPasteText] = useState("");
@@ -1354,11 +1423,12 @@ function PatientForm({ initial, onSave, onCancel }) {
   const [fatherH, setFatherH] = useState(initial?.fatherH ?? "");
   const [motherH, setMotherH] = useState(initial?.motherH ?? "");
   const [doctors, setDoctors] = useState(initial?.doctors || []);
+  const [pendingRecords, setPendingRecords] = useState([]);
   const toggleDoctor = (d) => setDoctors(cur => cur.includes(d) ? cur.filter(x => x !== d) : [...cur, d]);
 
   const handleParse = () => {
-    const r = parsePatientText(pasteText);
-    if (!r) { setParseHint("無法解析貼上的文字"); return; }
+    const { info: r, records } = parsePatientTextWithGrowth(pasteText);
+    if (!r) { setParseHint("無法解析貼上的文字"); setPendingRecords([]); return; }
     const filled = [];
     if (r.name) { setName(r.name); filled.push(`姓名「${r.name}」`); }
     if (r.chartNo) { setChartNo(r.chartNo); filled.push(`病歷號「${r.chartNo}」`); }
@@ -1366,6 +1436,8 @@ function PatientForm({ initial, onSave, onCancel }) {
     if (r.sex) { setSex(r.sex); filled.push(`性別「${r.sex === "girl" ? "女" : "男"}」`); }
     if (r.fatherH) { setFatherH(r.fatherH); filled.push(`父親身高「${r.fatherH} cm」`); }
     if (r.motherH) { setMotherH(r.motherH); filled.push(`母親身高「${r.motherH} cm」`); }
+    setPendingRecords(records);
+    if (records.length) filled.push(`身高體重紀錄 ${records.length} 筆（將於儲存後一併帶入）`);
     if (filled.length === 0) {
       setParseHint("沒有辨識到任何欄位，請改用手動輸入");
     } else {
@@ -1387,6 +1459,7 @@ function PatientForm({ initial, onSave, onCancel }) {
       fatherH: parseFloat(fatherH) || null,
       motherH: parseFloat(motherH) || null,
       doctors,
+      measurements: pendingRecords,
     });
   };
 
@@ -1402,21 +1475,22 @@ function PatientForm({ initial, onSave, onCancel }) {
       {tab === "paste" && !initial ? (
         <div className="p-6 space-y-3">
           <div className="text-xs text-stone-500 leading-relaxed">
-            可從醫院系統複製文字，貼到下方框中，系統會自動辨識姓名、病歷號、生日、性別、父母身高。<br/>
-            支援格式：<code className="bg-stone-100 px-1 py-0.5 rounded">王小明 1092859 106/10/24 女</code> 或 <code className="bg-stone-100 px-1 py-0.5 rounded">[Family history] Father 174 cm Mother 163 cm</code>
+            可從醫院系統或病歷產生器複製文字，貼到下方框中，系統會自動辨識姓名、病歷號、生日、性別、父母身高，<b>並可一併辨識各學期／年齡的身高體重紀錄一次帶入</b>。<br/>
+            基本資料格式：<code className="bg-stone-100 px-1 py-0.5 rounded">王小明 1092859 106/10/24 女</code> 或 <code className="bg-stone-100 px-1 py-0.5 rounded">[Family history] Father 174 cm Mother 163 cm</code><br/>
+            身高體重紀錄格式（需先辨識出生日，每行一筆）：<code className="bg-stone-100 px-1 py-0.5 rounded">小班上 97.4 15.7</code>、<code className="bg-stone-100 px-1 py-0.5 rounded">小一上 115.9 23.0</code>、<code className="bg-stone-100 px-1 py-0.5 rounded">2024-05-15 115.9 23.0</code> 或 <code className="bg-stone-100 px-1 py-0.5 rounded">1y6m 77.7 9.6</code>
           </div>
           <textarea value={pasteText} onChange={e => setPasteText(e.target.value)}
-            placeholder={"範例：\n王小明 1092859 民國 106/10/24 女\n[Family history] Father 174 cm Mother 163 cm"}
-            rows={8}
+            placeholder={"範例：\n王小明 1092859 民國 106/10/24 女\n[Family history] Father 174 cm Mother 163 cm\n\n小班上 97.4 15.7\n小班下 100.2 16.5\n小一上 115.9 23.0"}
+            rows={10}
             className="w-full px-3 py-2 border border-stone-200 rounded-lg focus:outline-none focus:border-stone-900 font-mono text-sm" />
           {parseHint && (
             <div className="text-xs bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-emerald-900">{parseHint}</div>
           )}
           <div className="flex gap-2">
             <button onClick={handleParse} disabled={!pasteText.trim()} className="flex-1 py-2 bg-stone-900 text-white rounded-lg hover:bg-stone-800 disabled:bg-stone-300">解析並填入</button>
-            <button onClick={() => { setPasteText(""); setParseHint(null); }} className="px-4 py-2 border border-stone-200 text-stone-600 rounded-lg hover:bg-stone-50">清空</button>
+            <button onClick={() => { setPasteText(""); setParseHint(null); setPendingRecords([]); }} className="px-4 py-2 border border-stone-200 text-stone-600 rounded-lg hover:bg-stone-50">清空</button>
           </div>
-          <div className="text-xs text-stone-400">解析後會自動切換到「手動填寫」分頁，請務必檢查每個欄位是否正確再儲存。</div>
+          <div className="text-xs text-stone-400">解析後會自動切換到「手動填寫」分頁，請務必檢查每個欄位是否正確再儲存；身高體重紀錄會在按下「儲存」建立病人後自動匯入。</div>
         </div>
       ) : (
         <div className="p-6 space-y-4">
@@ -1779,7 +1853,9 @@ function PAHDisplay({ pah, pah2, target, boneAge }) {
 }
 
 // =================== Paste Import ===================
-const PASTE_EXAMPLE = `小班上 100.0 13.0
+const PASTE_EXAMPLE = `1y6m 77.7 9.6
+2y3m 82.0 11.1
+小班上 100.0 13.0
 小班下 104.0 14.0
 中班上 106.1 15.8
 中班下 108.7 16.9
@@ -1795,7 +1871,7 @@ function PasteImport({ patient, onImport, onCancel }) {
   const submit = () => {
     if (result.rows.length === 0) { alert("沒有可匯入的資料列"); return; }
     const records = result.rows.map(r => {
-      const age = r.mode === "date"
+      const age = (r.mode === "date" || r.mode === "age")
         ? ageFromDates(patient.birth, r.measureDate)
         : ageFromGradeSemester(patient.birth, r.grade, r.semester)?.age;
       return {
@@ -1828,6 +1904,7 @@ function PasteImport({ patient, onImport, onCancel }) {
           <ul className="space-y-0.5 list-disc list-inside">
             <li>「年級+學期 身高 體重」例如：<code className="bg-white px-1 rounded">小一上 115.9 23.0</code></li>
             <li>「日期 身高 體重」例如：<code className="bg-white px-1 rounded">2024-05-15 115.9 23.0</code></li>
+            <li>「年齡 身高 體重」例如：<code className="bg-white px-1 rounded">1y6m 77.7 9.6</code>（也支援純月齡如 <code className="bg-white px-1 rounded">18m</code>）</li>
             <li>支援西元/民國年（民國年自動轉換）</li>
             <li>日期可用 <code className="bg-white px-1 rounded">/</code>、<code className="bg-white px-1 rounded">-</code>、<code className="bg-white px-1 rounded">.</code> 分隔，或純數字如 <code className="bg-white px-1 rounded">20260101</code>、<code className="bg-white px-1 rounded">1150101</code></li>
             <li>身高、體重可只填其中一項</li>
@@ -1868,12 +1945,14 @@ function PasteImport({ patient, onImport, onCancel }) {
                   </thead>
                   <tbody className="divide-y divide-stone-100">
                     {result.rows.map((r, i) => {
-                      const age = r.mode === "date"
+                      const age = (r.mode === "date" || r.mode === "age")
                         ? ageFromDates(patient.birth, r.measureDate)
                         : ageFromGradeSemester(patient.birth, r.grade, r.semester)?.age;
                       const bmi = (r.height && r.weight) ? r.weight / Math.pow(r.height / 100, 2) : null;
                       const labelTime = r.mode === "grade"
                         ? `${GRADE_OPTIONS.find(g => g.value === r.grade)?.label} ${r.semester} (${r.measureDate})`
+                        : r.mode === "age"
+                        ? `${r.ageYears}y${r.ageMonths}m (${r.measureDate})`
                         : r.measureDate;
                       const ageOK = age != null && age >= 0 && age <= 18.5;
                       return (
@@ -3488,10 +3567,14 @@ function App() {
   };
 
   const handleSavePatient = async (data) => {
+    const { measurements: incomingM, ...rest } = data;
     if (editingPatient && currentPatient) {
-      await persistPatient({ ...currentPatient, ...data });
+      const merged = (incomingM && incomingM.length)
+        ? [...(currentPatient.measurements || []), ...incomingM]
+        : currentPatient.measurements;
+      await persistPatient({ ...currentPatient, ...rest, measurements: merged });
     } else {
-      const np = { id: uid(), ...data, measurements: [], boneAges: [], treatments: [], createdAt: new Date().toISOString() };
+      const np = { id: uid(), ...rest, measurements: incomingM || [], boneAges: [], treatments: [], createdAt: new Date().toISOString() };
       await savePatient(np);
       const idx = await loadIndex();
       const newIdx = [...idx, indexEntry(np)];
