@@ -101,7 +101,7 @@
         <span class="calc" id="ageCalc"></span>
       </div>
       <div class="row">
-        <div class="field"><label>主訴</label><input type="text" id="cc" class="w9" placeholder="如 Short stature／Breast enlargement"></div>
+        <div class="field"><label>主訴</label><input type="text" id="cc" class="w9" placeholder="如：身長速度變慢、比同儕矮小、胸部發育＿＿個月"></div>
       </div>
     </div></div>
 
@@ -248,14 +248,14 @@ const Q = {
    out:(v,e)=>"Long-term systemic or topical drug use: "+v+(e?" — "+e:"")},
   {t:"yn",k:"f_herb",q:"是否有服用中藥？（促進食慾、轉骨）",extra:"品項",
    out:(v,e)=>"Chinese herbal medicine: "+v+(e?" — "+e:"")},
-  {t:"yn",k:"f_padelay",q:"爸爸是否有發育較晚（高中才突然抽高）的情況？",
-   out:(v)=>"Father with delayed puberty: "+v},
+  {t:"yn",k:"f_padelay",q:"爸爸是否有發育較晚（高中才突然抽高）的情況？",extra:"備註",
+   out:(v,e)=>"Father with delayed puberty: "+v+(e?" — "+e:"")},
   {t:"yn",k:"f_hx",q:"家族中是否有其他人有過度矮小、肥胖或性早熟的病史？",extra:"關係／情況",
    out:(v,e)=>"Family hx of short stature/obesity/precocious puberty: "+v+(e?" — "+e:"")},
  ],
  life:[
-  {t:"yn",k:"l_snore",q:"睡覺時是否經常打呼、張口呼吸或睡眠中斷？",
-   out:(v)=>"Snoring/mouth breathing/fragmented sleep: "+v},
+  {t:"yn",k:"l_snore",q:"睡覺時是否經常打呼、張口呼吸或睡眠中斷？",extra:"備註",
+   out:(v,e)=>"Snoring/mouth breathing/fragmented sleep: "+v+(e?" — "+e:"")},
   {t:"yn",k:"l_nocturia",q:"半夜是否需要起床尿尿？",extra:"次數",
    out:(v,e)=>"Nocturia: "+v+(e?" ("+e+"x/night)":"")},
   {t:"yn",k:"l_stress",q:"近期在學校或生活上是否有明顯壓力來源或情緒起伏較大？",extra:"說明",
@@ -268,8 +268,8 @@ const Q = {
  neuro:[
   {t:"yn",k:"n_ha",q:"平時是否容易頭痛？",extra:"型態／頻率",
    out:(v,e)=>"Headache: "+v+(e?" — "+e:"")},
-  {t:"yn",k:"n_vf",q:"是否有視野缺損（看東西範圍變窄、常撞到旁邊物體）？",
-   out:(v)=>"Visual field defect: "+v},
+  {t:"yn",k:"n_vf",q:"是否有視野缺損（看東西範圍變窄、常撞到旁邊物體）？",extra:"備註",
+   out:(v,e)=>"Visual field defect: "+v+(e?" — "+e:"")},
  ],
 };
 
@@ -484,7 +484,8 @@ function render(){
     famOut.push(item.out(s,ST.extra[item.k]||""));
   }
   const moMen=v("moMen");
-  if(!isNaN(fa))famOut.push("Father "+fa+" cm"+(ST.yn.f_padelay==="y"?", delayed puberty(+)":ST.yn.f_padelay==="n"?", delayed puberty(-)":""));
+  const padExtra=ST.extra.f_padelay?" — "+ST.extra.f_padelay:"";
+  if(!isNaN(fa))famOut.push("Father "+fa+" cm"+(ST.yn.f_padelay==="y"?", delayed puberty(+)"+padExtra:ST.yn.f_padelay==="n"?", delayed puberty(-)":""));
   if(!isNaN(mo))famOut.push("Mother "+mo+" cm"+(moMen?", menarche at "+moMen+" y":""));
   if(th!=null)famOut.push("Target height "+th+" cm");
   if(famOut.length){L.push("");L.push("[Family & drug history]");L.push(...famOut);}
