@@ -136,6 +136,10 @@ const ICON_DATA = {
     ["circle", { cx: "9", cy: "7", r: "4" }],
     ["path", { d: "M22 21v-2a4 4 0 0 0-3-3.87" }],
     ["path", { d: "M16 3.13a4 4 0 0 1 0 7.75" }]
+  ],
+  "copy": [
+    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2" }],
+    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" }]
   ]
 };
 
@@ -177,6 +181,7 @@ const Activity = (p) => <Icon name="activity" {...p} />;
 const X = (p) => <Icon name="x" {...p} />;
 const ChevronDown = (p) => <Icon name="chevron-down" {...p} />;
 const Users = (p) => <Icon name="users" {...p} />;
+const Copy = (p) => <Icon name="copy" {...p} />;
 
 
 // =========================================================
@@ -397,6 +402,70 @@ function bmiCategory(bmi, ref) {
   if (bmi < ref.over) return { label: "正常", color: "#16a34a" };
   if (bmi < ref.obese) return { label: "過重", color: "#ea580c" };
   return { label: "肥胖", color: "#dc2626" };
+}
+
+// Approximate BMI percentile from the app's existing under/over/obese cutoff lines.
+// Taiwan's official BMI-for-age classification defines: 過輕 < P5, 正常 P5-P85,
+// 過重 P85-P95, 肥胖 >= P95 — so under/over/obese ARE the P5/P85/P95 points.
+// This linearly interpolates/extrapolates between those 3 known points; it is an
+// approximation (not a full percentile curve) but reuses data already in the app.
+function bmiPercentileFromRef(bmi, ref) {
+  if (bmi == null || isNaN(bmi) || !ref) return null;
+  const { under: p5, over: p85, obese: p95 } = ref;
+  if (bmi <= p5) return Math.max(0.1, 5 * bmi / p5);
+  if (bmi >= p95) return Math.min(99.9, 95 + (bmi - p95) / p95 * 4);
+  if (bmi <= p85) return 5 + (bmi - p5) / (p85 - p5) * (85 - 5);
+  return 85 + (bmi - p85) / (p95 - p85) * (95 - 85);
+}
+function pRound(p) {
+  if (p == null || isNaN(p)) return null;
+  if (p < 1) return "<1";
+  if (p > 99) return ">99";
+  return String(Math.round(p));
+}
+
+// Bone age assessment standard deviation (in months), by chronological age (CA) and sex.
+// User-provided reference table.
+const BA_SD_TABLE = [
+  { age: 1,    m: 2.1,  f: 2.7  },
+  { age: 1.5,  m: 2.7,  f: 3.4  },
+  { age: 2,    m: 4,    f: 4    },
+  { age: 2.5,  m: 5.4,  f: 4.8  },
+  { age: 3,    m: 6,    f: 5.6  },
+  { age: 3.5,  m: 6.6,  f: 6.5  },
+  { age: 4,    m: 7,    f: 7.2  },
+  { age: 4.5,  m: 7.8,  f: 8    },
+  { age: 5,    m: 8.4,  f: 8.6  },
+  { age: 5.5,  m: 9.1,  f: 8.9  },
+  { age: 6,    m: 9.3,  f: 9    },
+  { age: 7,    m: 10.1, f: 8.3  },
+  { age: 8,    m: 10.8, f: 8.8  },
+  { age: 9,    m: 11,   f: 9.3  },
+  { age: 10,   m: 11.4, f: 10.8 },
+  { age: 11,   m: 10.5, f: 12.3 },
+  { age: 12,   m: 10.4, f: 14   },
+  { age: 13,   m: 11.1, f: 14.6 },
+  { age: 14,   m: 12,   f: 12.6 },
+  { age: 15,   m: 14.2, f: 11.2 },
+  { age: 16,   m: 15.1, f: null },
+  { age: 17,   m: 15.4, f: null },
+];
+// sex: "boy" | "girl" (matches patient.sex convention used elsewhere in this file)
+function boneAgeSdAt(age, sex) {
+  if (age == null || isNaN(age)) return null;
+  const key = sex === "boy" ? "m" : "f";
+  const rows = BA_SD_TABLE.filter(r => r[key] != null);
+  if (rows.length === 0) return null;
+  if (age <= rows[0].age) return rows[0][key];
+  if (age >= rows[rows.length - 1].age) return rows[rows.length - 1][key];
+  for (let i = 0; i < rows.length - 1; i++) {
+    const a = rows[i], b = rows[i + 1];
+    if (age >= a.age && age <= b.age) {
+      const t = (age - a.age) / (b.age - a.age);
+      return a[key] + (b[key] - a[key]) * t;
+    }
+  }
+  return null;
 }
 
 // Bayley-Pinneau category determination
@@ -1784,6 +1853,63 @@ function pctClass(pct) {
   return "text-emerald-700";
 }
 
+// Build the one-line (or two-line, if bone age present) plain-text summary of a visit
+// for pasting into a chart note, e.g.:
+//   BH 141.0 (P77), BW 37.6 (P97), BMI 18.91 (P95)
+//   Bone age (2026-07-23): 8y3m (CA 8y6m SD 10.8) PAH (152.3)
+function buildVisitCopyText(patient, m) {
+  const r = refAt(m.age, patient.sex);
+  const br = bmiRefAt(m.age, patient.sex);
+  const ph = r && m.height != null ? percentileFromRef(m.height, r, "h") : null;
+  const pw = r && m.weight != null ? percentileFromRef(m.weight, r, "w") : null;
+  const pb = br && m.bmi != null ? bmiPercentileFromRef(m.bmi, br) : null;
+  const parts = [];
+  if (m.height != null) parts.push(`BH ${fmt(m.height, 1)}${ph != null ? ` (P${pRound(ph)})` : ""}`);
+  if (m.weight != null) parts.push(`BW ${fmt(m.weight, 1)}${pw != null ? ` (P${pRound(pw)})` : ""}`);
+  if (m.bmi != null) parts.push(`BMI ${fmt(m.bmi, 2)}${pb != null ? ` (P${pRound(pb)})` : ""}`);
+  const lines = [parts.join(", ")];
+  if (m.boneAge) {
+    const pah = computePAH(patient.sex, m.boneAge, m.age, m.height);
+    const pah2 = computePAH2(patient.sex, m.boneAge, m.height);
+    const sd = boneAgeSdAt(m.age, patient.sex); // looked up by CA (chronological age), per reference table
+    const sdPart = sd != null ? ` SD ${fmt(sd, 1)}` : "";
+    const pah1v = pah && pah.pah ? fmt(pah.pah, 1) : "";
+    const pah2v = pah2 && pah2.pah ? fmt(pah2.pah, 1) : "";
+    const pahPart = (pah1v || pah2v) ? `${pah1v}-${pah2v}` : "";
+    const ymCompact = (age) => ageToYM(age).replace(/\s+/g, "");
+    lines.push(`Bone age (${m.measureDate}): ${ymCompact(m.boneAge)} (CA ${ymCompact(m.age)}${sdPart}) PAH ${pahPart}`);
+  }
+  return lines.join("\n");
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (_) {}
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch (_) { return false; }
+}
+
+// One-click copy of a single visit's BH/BW/BMI (+ bone age, if present) as chart-note text
+function CopyVisitButton({ patient, measurement }) {
+  const [copied, setCopied] = useState(false);
+  const handleClick = async () => {
+    const text = buildVisitCopyText(patient, measurement);
+    const ok = await copyText(text);
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1400); }
+  };
+  return (
+    <button onClick={handleClick} title="複製當次身高體重／骨齡摘要"
+      className={`p-1 rounded ${copied ? "text-emerald-600" : "text-stone-400 hover:text-stone-900"}`}>
+      <Copy size={14} />
+    </button>
+  );
+}
+
 // Display both PAH algorithms side-by-side
 function PAHDisplay({ pah, pah2, target, boneAge }) {
   const inTarget = (val) => target && val != null && val >= target.lower && val <= target.upper;
@@ -3149,6 +3275,7 @@ function PatientView({ patient, patients, onBack, onSwitchPatient, onNewPatient,
                             <td className="px-4 py-2.5 text-stone-500">{m.note || "—"}</td>
                             <td className="px-4 py-2.5 text-right print:hidden">
                               <div className="flex gap-1 justify-end">
+                                <CopyVisitButton patient={patient} measurement={m} />
                                 <button onClick={() => onEditMeasurement(m)} className="p-1 text-stone-400 hover:text-stone-900 rounded"><Edit3 size={14} /></button>
                                 <button onClick={() => { if (confirm("確定刪除這筆紀錄？")) onDeleteMeasurement(m.id); }} className="p-1 text-stone-400 hover:text-red-600 rounded"><Trash2 size={14} /></button>
                               </div>
