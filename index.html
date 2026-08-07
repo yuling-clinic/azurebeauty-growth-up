@@ -2865,7 +2865,7 @@ function PrintView({ patient, onClose }) {
                 <th style={{ ...thStyle, textAlign: "right" }}>體重%</th>
                 <th style={{ ...thStyle, textAlign: "center" }}>BMI</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>骨齡</th>
-                <th style={thStyle}>治療 / 備註</th>
+                <th style={thStyle}>治療</th>
               </tr>
             </thead>
             <tbody>
@@ -2875,11 +2875,10 @@ function PrintView({ patient, onClose }) {
                 const ph = r ? percentileFromRef(m.height, r, "h") : null;
                 const pw = r ? percentileFromRef(m.weight, r, "w") : null;
                 const cat = br ? bmiCategory(m.bmi, br) : null;
-                const txText = txs.map(t => {
-                  const cleanNote = t.note && !t.note.startsWith("（由測量紀錄") ? t.note : "";
-                  return `${t.drug}${cleanNote ? `(${cleanNote})` : ""}`;
-                }).join(", ");
-                const noteText = [m.note, txText].filter(Boolean).join("; ");
+                // Print report is handed to families — omit free-text notes (both measurement
+                // notes and treatment notes), keep only the treatment/drug name itself.
+                const txText = txs.map(t => t.drug).join(", ");
+                const noteText = txText;
                 return (
                   <tr key={m.id} style={{ borderBottom: "1px solid #f5f5f4" }}>
                     <td style={tdStyle}>{m.measureDate}</td>
@@ -2900,7 +2899,7 @@ function PrintView({ patient, onClose }) {
                   <td style={tdStyle}>{t.startDate}</td>
                   <td style={tdStyle}>{t.startAge != null ? ageToYM(t.startAge) : "—"}</td>
                   <td colSpan={7} style={{ ...tdStyle, color: "#78716c", fontStyle: "italic" }}>—</td>
-                  <td style={{ ...tdStyle, color: "#0c4a6e" }}>開始 {t.drug}{t.note && !t.note.startsWith("（由測量紀錄") ? ` (${t.note})` : ""}</td>
+                  <td style={{ ...tdStyle, color: "#0c4a6e" }}>開始 {t.drug}</td>
                 </tr>
               ))}
             </tbody>
