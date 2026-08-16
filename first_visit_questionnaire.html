@@ -72,6 +72,11 @@
   .pbadge{font-size:11.5px;font-weight:700;color:var(--muted);background:var(--surface-2);border:1px solid var(--line);padding:2px 7px;border-radius:5px;font-family:var(--mono)}
   .pbadge.hot{color:var(--amber);background:var(--amber-soft);border-color:var(--amber-line)}
   .hint{font-size:11.5px;color:var(--faint);margin-top:6px;line-height:1.6}
+  .req{color:var(--amber);font-weight:700}
+  input.invalid{border-color:var(--amber);background:var(--amber-soft)}
+  .seg.invalid{border-color:var(--amber);box-shadow:0 0 0 1px var(--amber)}
+  .warn{font-size:12.5px;color:var(--amber);background:var(--amber-soft);border:1px solid var(--amber-line);border-radius:6px;padding:8px 10px;margin-top:8px}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
   .chk{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted);cursor:pointer;user-select:none}
 </style>
 </head>
@@ -86,14 +91,14 @@
 
     <div class="card"><h2>基本資料</h2><div class="body">
       <div class="row">
-        <div class="field"><label>姓名</label><input type="text" id="name" class="w7"></div>
-        <div class="field"><label>病歷號</label><input type="text" id="chart" class="w5" placeholder="選填"></div>
-        <div class="field"><label>性別</label>
+        <div class="field"><label>姓名 <span class="req">*</span></label><input type="text" id="name" class="w7"></div>
+        <div class="field"><label>病歷號 <span class="req">*</span></label><input type="text" id="chart" class="w5"></div>
+        <div class="field"><label>性別 <span class="req">*</span></label>
           <div class="seg" id="sexSeg"><button data-sex="f" class="on">女</button><button data-sex="m">男</button></div>
         </div>
       </div>
       <div class="row">
-        <div class="field"><label>生日（西元）</label>
+        <div class="field"><label>生日（西元） <span class="req">*</span></label>
           <input type="number" id="by" class="w4" placeholder="YYYY">年
           <input type="number" id="bm" class="w3" placeholder="MM">月
           <input type="number" id="bd" class="w3" placeholder="DD">日
@@ -132,9 +137,10 @@
 
   <div class="out">
     <div class="card">
-      <h2>病歷（單一欄位）<button class="btn" data-copy>複製全部</button></h2>
+      <h2>病歷（單一欄位）<button class="btn" data-copy id="copyBtn">複製全部</button></h2>
       <textarea class="note" id="noteBox" readonly></textarea>
       <div class="body" style="padding-top:10px">
+        <div class="warn" id="reqWarn" style="display:none"></div>
         <div class="hint">
           <b>前兩行</b>可貼到生長曲線系統「新增病人 → 貼上文字辨識」。<br>
           <b>空行後的各學期紀錄</b>會被同一個貼上動作一併辨識帶入。<br>
@@ -387,6 +393,28 @@ function render(){
   const name=v("name"),chart=v("chart");
   const by=parseInt(v("by")),bm=parseInt(v("bm")),bd=parseInt(v("bd"));
   const hasBirth=!isNaN(by)&&!isNaN(bm)&&!isNaN(bd)&&bm>=1&&bm<=12&&bd>=1&&bd<=31;
+
+  /* required-field check: 姓名／病歷號／生日／性別 */
+  const missing=[];
+  const nameEl=document.getElementById("name"),chartEl=document.getElementById("chart"),segEl=document.getElementById("sexSeg");
+  if(!name)missing.push("姓名");
+  if(!chart)missing.push("病歷號");
+  if(!hasBirth)missing.push("生日");
+  if(!ST.sex)missing.push("性別");
+  nameEl.classList.toggle("invalid",!name);
+  chartEl.classList.toggle("invalid",!chart);
+  ["by","bm","bd"].forEach(id=>document.getElementById(id).classList.toggle("invalid",!hasBirth));
+  segEl.classList.toggle("invalid",!ST.sex);
+  const warnEl=document.getElementById("reqWarn"),copyBtn=document.getElementById("copyBtn");
+  if(missing.length){
+    warnEl.style.display="";
+    warnEl.textContent="請先填寫必填欄位："+missing.join("、");
+    copyBtn.disabled=true;
+  }else{
+    warnEl.style.display="none";
+    copyBtn.disabled=false;
+  }
+
   const fa=parseFloat(v("faH")),mo=parseFloat(v("moH"));
   const th=targetHeight(ST.sex,fa,mo);
   const thEl=document.getElementById("thCalc");
@@ -514,7 +542,7 @@ function render(){
 }
 
 document.addEventListener("click",async e=>{
-  const b=e.target.closest("[data-copy]");if(!b)return;
+  const b=e.target.closest("[data-copy]");if(!b||b.disabled)return;
   const text=document.getElementById("noteBox").value;
   let ok=false;
   try{await navigator.clipboard.writeText(text);ok=true;}catch(_){
