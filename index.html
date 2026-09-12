@@ -534,9 +534,14 @@ function computePAH2(sex, boneAge, height) {
   ];
   let pah = null;
   if (pct <= finalPts[0].p) {
-    pah = finalPts[0].v - (finalPts[0].p - pct) / finalPts[0].p * finalPts[0].v * 0.05;
+    // Exact inverse of percentileFromRef's below-P3 formula (percentile = p * value / threshold),
+    // so that boneAge == final reference age reproduces the current height exactly.
+    pah = pct / finalPts[0].p * finalPts[0].v;
   } else if (pct >= finalPts[finalPts.length-1].p) {
-    pah = finalPts[finalPts.length-1].v + (pct - finalPts[finalPts.length-1].p) * 0.1;
+    // Exact inverse of percentileFromRef's above-P97 formula
+    // (percentile = p97 + (value - h97) / h97 * 2).
+    const last = finalPts[finalPts.length - 1];
+    pah = last.v * (1 + (pct - last.p) / 2);
   } else {
     for (let i = 0; i < finalPts.length - 1; i++) {
       if (pct >= finalPts[i].p && pct <= finalPts[i+1].p) {
@@ -1882,6 +1887,68 @@ function buildVisitCopyText(patient, m) {
   return lines.join("\n");
 }
 
+// Minimal RFC4180-ish CSV line parser: splits on commas outside double quotes,
+// unescapes doubled quotes. Good enough for the app's own CSV export format.
+function parseCsvLine(line) {
+  const out = []; let cur = ""; let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQ) {
+      if (c === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else inQ = false;
+      } else cur += c;
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === ",") { out.push(cur); cur = ""; }
+      else cur += c;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
+// Parses this app's own per-patient CSV export (量測日期,年齡(歲),身高(cm),體重(kg),BMI,
+// 身高百分位,體重百分位,BMI分類,骨齡,PAH (B-P),PAH (骨齡投射),備註) back into measurement
+// records. Percentile/BMI-category/PAH columns are recomputed live elsewhere in the app,
+// so only the raw inputs (date/age/height/weight/bmi/boneAge/note) are taken from the file.
+function parseGrowthCsv(text) {
+  const clean = text.replace(/^\uFEFF/, "");
+  const lines = clean.split(/\r\n|\n|\r/).filter(l => l.trim() !== "");
+  if (!lines.length) return { records: [], errors: ["檔案是空的"] };
+  const header = parseCsvLine(lines[0]);
+  const looksLikeHeader = header[0] && header[0].includes("量測日期");
+  const dataLines = looksLikeHeader ? lines.slice(1) : lines;
+  const records = []; const errors = [];
+  dataLines.forEach((line, idx) => {
+    const cols = parseCsvLine(line);
+    const [measureDate, ageStr, heightStr, weightStr, bmiStr, , , , boneAgeStr, , , note] = cols;
+    const age = parseFloat(ageStr);
+    const height = parseFloat(heightStr);
+    const weight = parseFloat(weightStr);
+    if (!measureDate || isNaN(age) || (isNaN(height) && isNaN(weight))) {
+      errors.push(`第 ${idx + (looksLikeHeader ? 2 : 1)} 行格式不完整，已略過：${line}`);
+      return;
+    }
+    const bmi = !isNaN(parseFloat(bmiStr)) ? parseFloat(bmiStr)
+      : (!isNaN(height) && !isNaN(weight) ? weight / Math.pow(height / 100, 2) : null);
+    const boneAge = boneAgeStr && boneAgeStr !== "—" && !isNaN(parseFloat(boneAgeStr)) ? parseFloat(boneAgeStr) : null;
+    records.push({
+      id: uid(), mode: "date", measureDate, age,
+      height: !isNaN(height) ? height : null,
+      weight: !isNaN(weight) ? weight : null,
+      bmi, boneAge, note: note || "",
+      recordType: "followup", createdAt: new Date().toISOString(),
+    });
+  });
+  // Earliest record defaults to "initial" (CSV export doesn't preserve the original flag)
+  if (records.length) {
+    records.sort((a, b) => a.age - b.age);
+    records[0].recordType = "initial";
+  }
+  return { records, errors };
+}
+
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch (_) {}
   try {
@@ -3032,7 +3099,7 @@ function PatientSwitcher({ currentPatient, patients, onSwitchPatient, onNewPatie
 }
 
 // =================== Patient View ===================
-function PatientView({ patient, patients, onBack, onSwitchPatient, onNewPatient, onEdit, onAddMeasurement, onPasteImport, onAddBoneAge,
+function PatientView({ patient, patients, onBack, onSwitchPatient, onNewPatient, onEdit, onAddMeasurement, onPasteImport, onImportCSV, onAddBoneAge,
                      onAddTreatment, onEditMeasurement, onEditBoneAge, onEditTreatment,
                      onDeleteMeasurement, onDeleteBoneAge, onDeleteTreatment }) {
   const [showRange, setShowRange] = useState("auto");
@@ -3131,6 +3198,21 @@ function PatientView({ patient, patients, onBack, onSwitchPatient, onNewPatient,
     URL.revokeObjectURL(url);
   };
 
+  const csvInputRef = useRef(null);
+  const handleCsvFile = async (file) => {
+    if (!file) return;
+    const text = await file.text();
+    const { records, errors } = parseGrowthCsv(text);
+    if (errors.length) console.warn("CSV 匯入警告：", errors);
+    if (!records.length) { alert("這個檔案沒有可匯入的身高體重紀錄" + (errors.length ? "：\n" + errors.join("\n") : "")); return; }
+    const skip = new Set((patient.measurements || []).map(m => m.measureDate));
+    const toAdd = records.filter(r => !skip.has(r.measureDate));
+    const skipped = records.length - toAdd.length;
+    if (!toAdd.length) { alert("這個檔案裡的日期都已經匯入過了，沒有新增任何紀錄"); return; }
+    if (!confirm(`將匯入 ${toAdd.length} 筆紀錄${skipped ? `（另有 ${skipped} 筆日期重複已略過）` : ""}${errors.length ? `\n\n有 ${errors.length} 行格式不完整已略過` : ""}，確定繼續？`)) return;
+    onImportCSV(toAdd);
+  };
+
   return (
     <div className="min-h-screen bg-stone-50">
       {printMode === "parent" && (
@@ -3149,6 +3231,8 @@ function PatientView({ patient, patients, onBack, onSwitchPatient, onNewPatient,
             <button onClick={downloadPrintPNG} className="flex items-center gap-1 px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"><Download size={14} /> 下載列印圖 (PNG)</button>
             <button onClick={() => setPrintMode("parent")} className="flex items-center gap-1 px-3 py-1.5 text-sm border border-stone-200 rounded-lg hover:bg-stone-100"><Printer size={14} /> 預覽</button>
             <button onClick={exportCSV} className="flex items-center gap-1 px-3 py-1.5 text-sm border border-stone-200 rounded-lg hover:bg-stone-100"><Download size={14} /> CSV</button>
+            <button onClick={() => csvInputRef.current?.click()} className="flex items-center gap-1 px-3 py-1.5 text-sm border border-stone-200 rounded-lg hover:bg-stone-100"><ClipboardPaste size={14} /> 匯入 CSV</button>
+            <input ref={csvInputRef} type="file" accept=".csv" className="hidden" onChange={e => { handleCsvFile(e.target.files[0]); e.target.value = ""; }} />
             <button onClick={onEdit} className="flex items-center gap-1 px-3 py-1.5 text-sm border border-stone-200 rounded-lg hover:bg-stone-100"><Edit3 size={14} /> 編輯</button>
           </div>
         } />
@@ -3813,6 +3897,14 @@ function App() {
     setShowPasteImport(false);
   };
 
+  const handleImportCSV = async (records) => {
+    if (!currentPatient) return;
+    const ms = currentPatient.measurements || [];
+    const newMs = [...ms, ...records];
+    newMs.sort((a, b) => a.age - b.age);
+    await persistPatient({ ...currentPatient, measurements: newMs, lastVisit: newMs.length ? newMs[newMs.length - 1].measureDate : null });
+  };
+
   const handleSaveBoneAge = async (b) => {
     if (!currentPatient) return;
     const list = currentPatient.boneAges || [];
@@ -3857,6 +3949,7 @@ function App() {
           onEdit={() => { setEditingPatient(true); setShowPatientForm(true); }}
           onAddMeasurement={() => { setEditingMeasurement(null); setShowMeasurementForm(true); }}
           onPasteImport={() => setShowPasteImport(true)}
+          onImportCSV={handleImportCSV}
           onAddBoneAge={() => { setEditingBoneAge(null); setShowBoneAgeForm(true); }}
           onAddTreatment={() => { setEditingTreatment(null); setShowTreatmentForm(true); }}
           onEditMeasurement={(m) => {
