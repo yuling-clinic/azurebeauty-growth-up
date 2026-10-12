@@ -409,18 +409,64 @@ function bmiCategory(bmi, ref) {
 // 過重 P85-P95, 肥胖 >= P95 — so under/over/obese ARE the P5/P85/P95 points.
 // This linearly interpolates/extrapolates between those 3 known points; it is an
 // approximation (not a full percentile curve) but reuses data already in the app.
-function bmiPercentileFromRef(bmi, ref) {
-  if (bmi == null || isNaN(bmi) || !ref) return null;
-  const { under: p5, over: p85, obese: p95 } = ref;
-  if (bmi <= p5) return Math.max(0.1, 5 * bmi / p5);
-  if (bmi >= p95) return Math.min(99.9, 95 + (bmi - p95) / p95 * 4);
-  if (bmi <= p85) return 5 + (bmi - p5) / (p85 - p5) * (85 - 5);
-  return 85 + (bmi - p85) / (p95 - p85) * (95 - 85);
+// ── BMI percentile computation (Taiwan reference; ported from the 亞東醫院 growth
+// chart deployment, which has a real percentile table — replaces the earlier 3-point
+// under/over/obese-cutoff approximation used in this file) ──
+const BMIPCT_Z = [-1.6449, -1.0364, 0, 1.0364, 1.6449]; // P5, P15, P50, P85, P95
+const BMI_PCT_REF = {
+  boy: {
+    ages: [24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90, 96, 102, 108, 114, 120, 126, 132, 138, 144, 150, 156, 162, 168, 174, 180, 186, 192, 198, 204, 210, 216, 222],
+    v: [[14.2, 14.8, 16.0, 17.4, 18.3], [13.9, 14.6, 15.8, 17.2, 18.0], [13.7, 14.4, 15.6, 17.0, 17.8], [13.6, 14.2, 15.4, 16.8, 17.7], [13.4, 14.1, 15.3, 16.7, 17.6], [13.3, 14.0, 15.3, 16.7, 17.6], [13.3, 13.9, 15.2, 16.7, 17.7], [13.4, 14.0, 15.3, 16.7, 18.0], [13.5, 14.2, 15.4, 16.9, 18.5], [13.6, 14.3, 15.7, 17.3, 19.2], [13.8, 14.5, 15.9, 17.9, 20.3], [14.0, 14.7, 16.1, 18.6, 21.2], [14.1, 14.9, 16.3, 19.0, 21.6], [14.2, 15.0, 16.5, 19.3, 22.0], [14.3, 15.1, 16.7, 19.5, 22.3], [14.4, 15.2, 16.8, 19.7, 22.5], [14.5, 15.3, 17.0, 20.0, 22.7], [14.6, 15.4, 17.1, 20.3, 22.9], [14.8, 15.6, 17.4, 20.7, 23.2], [15.0, 15.8, 17.7, 21.0, 23.5], [15.2, 16.1, 18.0, 21.3, 23.9], [15.4, 16.4, 18.3, 21.5, 24.2], [15.7, 16.7, 18.7, 21.9, 24.5], [16.0, 17.0, 19.1, 22.2, 24.8], [16.3, 17.3, 19.4, 22.5, 25.0], [16.6, 17.6, 19.7, 22.7, 25.2], [16.9, 17.9, 20.0, 22.9, 25.4], [17.2, 18.2, 20.3, 23.1, 25.5], [17.4, 18.4, 20.5, 23.3, 25.6], [17.6, 18.6, 20.7, 23.4, 25.6], [17.8, 18.8, 20.9, 23.5, 25.6], [18.0, 19.0, 21.0, 23.6, 25.6], [18.1, 19.1, 21.1, 23.7, 25.6], [18.2, 19.2, 21.2, 23.7, 25.6]],
+  },
+  girl: {
+    ages: [24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90, 96, 102, 108, 114, 120, 126, 132, 138, 144, 150, 156, 162, 168, 174, 180, 186, 192, 198, 204, 210, 216, 222],
+    v: [[13.7, 14.4, 15.7, 17.2, 18.1], [13.6, 14.3, 15.5, 17.0, 17.9], [13.5, 14.1, 15.4, 16.9, 17.8], [13.3, 14.0, 15.3, 16.8, 17.8], [13.2, 13.9, 15.3, 16.8, 17.9], [13.1, 13.9, 15.3, 16.9, 18.0], [13.1, 13.8, 15.3, 17.0, 18.1], [13.1, 13.8, 15.3, 17.0, 18.3], [13.1, 13.8, 15.3, 17.2, 18.8], [13.2, 13.9, 15.4, 17.5, 19.2], [13.4, 14.1, 15.6, 17.7, 19.6], [13.7, 14.4, 15.8, 18.0, 20.3], [13.8, 14.5, 16.0, 18.4, 20.7], [13.9, 14.6, 16.1, 18.8, 21.0], [14.0, 14.8, 16.3, 19.1, 21.3], [14.1, 14.9, 16.5, 19.3, 21.6], [14.3, 15.1, 16.8, 19.7, 22.0], [14.4, 15.2, 17.1, 20.1, 22.3], [14.7, 15.5, 17.5, 20.5, 22.7], [14.9, 15.8, 17.9, 20.9, 23.1], [15.2, 16.1, 18.3, 21.3, 23.5], [15.4, 16.4, 18.6, 21.6, 23.9], [15.7, 16.7, 19.0, 21.9, 24.3], [16.0, 17.0, 19.3, 22.2, 24.6], [16.3, 17.3, 19.6, 22.5, 24.9], [16.5, 17.6, 19.8, 22.7, 25.1], [16.7, 17.8, 19.9, 22.7, 25.2], [16.9, 18.0, 20.0, 22.7, 25.3], [17.1, 18.1, 20.0, 22.7, 25.3], [17.2, 18.2, 20.0, 22.7, 25.3], [17.3, 18.3, 20.0, 22.7, 25.3], [17.3, 18.3, 20.0, 22.7, 25.3], [17.3, 18.3, 20.1, 22.7, 25.3], [17.3, 18.3, 20.1, 22.7, 25.3]],
+  }
+};
+function _erf(x) { const t = 1 / (1 + 0.3275911 * Math.abs(x)); const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x); return x >= 0 ? y : -y; }
+function _normCdf(z) { return 0.5 * (1 + _erf(z / Math.SQRT2)); }
+function bmiPercentile(sex, ageYears, bmi) {
+  if (!bmi || ageYears == null) return null;
+  const g = BMI_PCT_REF[sex];
+  const ageMo = ageYears * 12;
+  if (ageMo < g.ages[0]) return null;
+  const ages = g.ages, rows = g.v;
+  let interpRow;
+  if (ageMo <= ages[0]) interpRow = rows[0];
+  else if (ageMo >= ages[ages.length - 1]) interpRow = rows[rows.length - 1];
+  else {
+    let i = 0; while (ages[i + 1] < ageMo) i++;
+    const f = (ageMo - ages[i]) / (ages[i + 1] - ages[i]);
+    interpRow = rows[i].map((v, j) => v + (rows[i + 1][j] - v) * f);
+  }
+  const zs = BMIPCT_Z, n = interpRow.length;
+  let z;
+  if (bmi <= interpRow[0]) { const s = (zs[1] - zs[0]) / (interpRow[1] - interpRow[0]); z = zs[0] + (bmi - interpRow[0]) * s; }
+  else if (bmi >= interpRow[n - 1]) { const s = (zs[n - 1] - zs[n - 2]) / (interpRow[n - 1] - interpRow[n - 2]); z = zs[n - 1] + (bmi - interpRow[n - 1]) * s; }
+  else {
+    let i = 0; while (interpRow[i + 1] < bmi) i++;
+    const f = (bmi - interpRow[i]) / (interpRow[i + 1] - interpRow[i]);
+    z = zs[i] + (zs[i + 1] - zs[i]) * f;
+  }
+  return _normCdf(z) * 100;
 }
+// Percentile display rule: below the 3rd / above the 97th reference line the value is
+// extrapolated, so show "<3" / ">97" rather than a number that reads as exactly P3 / P97.
+function pctShown(p, digits = 1) {
+  if (p == null || isNaN(p)) return "—";
+  if (p < 3) return "<3";
+  if (p > 97) return ">97";
+  return p.toFixed(digits);
+}
+function pctLabel(p, digits = 1) {
+  const t = pctShown(p, digits);
+  return t === "—" ? t : t + "%";
+}
+
 function pRound(p) {
   if (p == null || isNaN(p)) return null;
-  if (p < 1) return "<1";
-  if (p > 99) return ">99";
+  if (p < 3) return "<3";
+  if (p > 97) return ">97";
   return String(Math.round(p));
 }
 
@@ -1782,11 +1828,11 @@ function MeasurementForm({ patient, initial, onSave, onCancel }) {
           <div className="grid grid-cols-3 gap-2 text-center text-xs">
             <div className="bg-white border border-stone-200 rounded-lg p-2">
               <div className="text-stone-500">身高 百分位</div>
-              <div className={`font-bold text-base ${pctClass(stats.h_pct)}`}>{stats.h_pct == null ? "—" : `${fmt(stats.h_pct, 1)}%`}</div>
+              <div className={`font-bold text-base ${pctClass(stats.h_pct)}`}>{pctLabel(stats.h_pct, 1)}</div>
             </div>
             <div className="bg-white border border-stone-200 rounded-lg p-2">
               <div className="text-stone-500">體重 百分位</div>
-              <div className={`font-bold text-base ${pctClass(stats.w_pct)}`}>{stats.w_pct == null ? "—" : `${fmt(stats.w_pct, 1)}%`}</div>
+              <div className={`font-bold text-base ${pctClass(stats.w_pct)}`}>{pctLabel(stats.w_pct, 1)}</div>
             </div>
             <div className="bg-white border border-stone-200 rounded-lg p-2">
               <div className="text-stone-500">BMI 分類</div>
@@ -1864,10 +1910,9 @@ function pctClass(pct) {
 //   Bone age (2026-07-23): 8y3m (CA 8y6m SD 10.8) PAH (152.3)
 function buildVisitCopyText(patient, m) {
   const r = refAt(m.age, patient.sex);
-  const br = bmiRefAt(m.age, patient.sex);
   const ph = r && m.height != null ? percentileFromRef(m.height, r, "h") : null;
   const pw = r && m.weight != null ? percentileFromRef(m.weight, r, "w") : null;
-  const pb = br && m.bmi != null ? bmiPercentileFromRef(m.bmi, br) : null;
+  const pb = m.bmi != null ? bmiPercentile(patient.sex, m.age, m.bmi) : null;
   const parts = [];
   if (m.height != null) parts.push(`BH ${fmt(m.height, 1)}${ph != null ? ` (P${pRound(ph)})` : ""}`);
   if (m.weight != null) parts.push(`BW ${fmt(m.weight, 1)}${pw != null ? ` (P${pRound(pw)})` : ""}`);
@@ -2029,7 +2074,7 @@ function PAHDisplay({ pah, pah2, target, boneAge }) {
                   )}
                 </div>
                 <div className="text-[11px] text-stone-500 mt-0.5">
-                  骨齡 {fmt(boneAge, 1)} 歲 · 百分位 {fmt(pah2.percentile, 1)}% · z={fmt(pah2.z, 2)}
+                  骨齡 {fmt(boneAge, 1)} 歲 · 百分位 {pctLabel(pah2.percentile, 1)} · z={fmt(pah2.z, 2)}
                 </div>
               </>
             )
@@ -2953,8 +2998,8 @@ function PrintView({ patient, onClose }) {
                     <td style={{ ...tdStyle, textAlign: "right" }}>{fmt(m.height, 1)}</td>
                     <td style={{ ...tdStyle, textAlign: "right" }}>{fmt(m.weight, 1)}</td>
                     <td style={{ ...tdStyle, textAlign: "right" }}>{fmt(m.bmi, 2)}</td>
-                    <td style={{ ...tdStyle, textAlign: "right" }}>{ph != null ? fmt(ph, 0) + "%" : "—"}</td>
-                    <td style={{ ...tdStyle, textAlign: "right" }}>{pw != null ? fmt(pw, 0) + "%" : "—"}</td>
+                    <td style={{ ...tdStyle, textAlign: "right" }}>{pctLabel(ph, 0)}</td>
+                    <td style={{ ...tdStyle, textAlign: "right" }}>{pctLabel(pw, 0)}</td>
                     <td style={{ ...tdStyle, textAlign: "center", color: cat?.color || "#78716c" }}>{cat?.label || "—"}</td>
                     <td style={{ ...tdStyle, textAlign: "right" }}>{m.boneAge ? fmt(m.boneAge, 1) : "—"}</td>
                     <td style={{ ...tdStyle, color: txText ? "#0c4a6e" : "#78716c" }}>{noteText || "—"}</td>
@@ -2982,6 +3027,7 @@ function PrintView({ patient, onClose }) {
           fontSize: 9.5, color: "#1c1917", lineHeight: 1.4
         }}>
           <div>身高體重百分位依據臺灣 0–18 歲生長 reference (mean ± SD)，BMI 切點依衛福部公布建議值。</div>
+          <div style={{ marginTop: 3, fontSize: 9, color: "#57534e" }}>系統開發與維護　兒童內分泌　黃玉齡醫師</div>
         </div>
       </div>
     </div>
@@ -3182,8 +3228,8 @@ function PatientView({ patient, patients, onBack, onSwitchPatient, onNewPatient,
       const pah = m.boneAge ? computePAH(patient.sex, m.boneAge, m.age, m.height) : null;
       const pah2 = m.boneAge ? computePAH2(patient.sex, m.boneAge, m.height) : null;
       rows.push([m.measureDate, fmt(m.age, 2), fmt(m.height, 1), fmt(m.weight, 1), fmt(m.bmi, 2),
-        ph != null ? fmt(ph, 1) + "%" : "—",
-        pw != null ? fmt(pw, 1) + "%" : "—",
+        pctLabel(ph, 1),
+        pctLabel(pw, 1),
         cat?.label || "—",
         m.boneAge ? fmt(m.boneAge, 1) : "—",
         pah && pah.pah ? fmt(pah.pah, 1) : "—",
@@ -3349,8 +3395,8 @@ function PatientView({ patient, patients, onBack, onSwitchPatient, onNewPatient,
                             <td className="px-4 py-2.5 text-right">{fmt(m.height, 1)}</td>
                             <td className="px-4 py-2.5 text-right">{fmt(m.weight, 1)}</td>
                             <td className="px-4 py-2.5 text-right">{fmt(m.bmi, 2)}</td>
-                            <td className={`px-4 py-2.5 text-right font-medium ${pctClass(ph)}`}>{ph == null ? "—" : `${fmt(ph, 1)}%`}</td>
-                            <td className={`px-4 py-2.5 text-right font-medium ${pctClass(pw)}`}>{pw == null ? "—" : `${fmt(pw, 1)}%`}</td>
+                            <td className={`px-4 py-2.5 text-right font-medium ${pctClass(ph)}`}>{pctLabel(ph, 1)}</td>
+                            <td className={`px-4 py-2.5 text-right font-medium ${pctClass(pw)}`}>{pctLabel(pw, 1)}</td>
                             <td className="px-4 py-2.5 text-center font-medium" style={{ color: cat?.color || "#a8a29e" }}>{cat?.label || "—"}</td>
                             <td className="px-4 py-2.5 text-right">{m.boneAge ? fmt(m.boneAge, 1) : "—"}</td>
                             <td className="px-4 py-2.5 text-right text-indigo-700 font-medium">{pah && pah.pah ? fmt(pah.pah, 1) : pah && pah.outOfRange ? <span className="text-amber-600 text-xs">超出</span> : "—"}</td>
@@ -3726,7 +3772,7 @@ function ImportDialog({ onClose, onDone }) {
 }
 
 // =================== App ===================
-function App() {
+function AppInner() {
   const [view, setView] = useState("list");
   const [patients, setPatients] = useState([]);
   const [currentId, setCurrentId] = useState(null);
@@ -4003,6 +4049,24 @@ function App() {
 
 function indexEntry(p) {
   return { id: p.id, name: p.name, chartNo: p.chartNo, birth: p.birth, sex: p.sex, fatherH: p.fatherH, motherH: p.motherH, doctors: p.doctors || [], measurements: p.measurements || [], lastVisit: p.lastVisit };
+}
+
+// Site-wide footer (screen only — the printed report has its own footer line)
+function SiteFooter() {
+  return (
+    <footer className="print:hidden text-center text-xs text-stone-500 py-4 bg-stone-50 border-t border-stone-200">
+      系統開發與維護　兒童內分泌　黃玉齡醫師
+    </footer>
+  );
+}
+
+function App() {
+  return (
+    <>
+      <AppInner />
+      <SiteFooter />
+    </>
+  );
 }
 
 // Mount the app
